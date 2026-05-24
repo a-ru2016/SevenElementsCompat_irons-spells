@@ -28,6 +28,7 @@ public class SevenElementsCompat {
 
     private static final Map<String, Element> SIMPLY_SWORDS_MAP = new HashMap<>();
     private static final Map<ResourceLocation, Element> IRONS_SPELLS_MAP = new HashMap<>();
+    private static final Map<String, Element> DAMAGE_TYPE_MAP = new HashMap<>();
     
     private static DataComponentType<ElementalInfusionComponent> elementalInfusionComponent = null;
 
@@ -66,6 +67,21 @@ public class SevenElementsCompat {
         IRONS_SPELLS_MAP.put(SchoolRegistry.ICE_RESOURCE, Element.CRYO);
         IRONS_SPELLS_MAP.put(SchoolRegistry.LIGHTNING_RESOURCE, Element.ELECTRO);
         IRONS_SPELLS_MAP.put(SchoolRegistry.NATURE_RESOURCE, Element.DENDRO);
+        IRONS_SPELLS_MAP.put(ResourceLocation.fromNamespaceAndPath("aces_spell_utils", "hydro"), Element.HYDRO);
+        IRONS_SPELLS_MAP.put(ResourceLocation.fromNamespaceAndPath("hazennstuff", "hydro"), Element.HYDRO);
+        IRONS_SPELLS_MAP.put(ResourceLocation.fromNamespaceAndPath("hazen_n_stuff", "hydro"), Element.HYDRO);
+
+        // Damage Type mappings
+        DAMAGE_TYPE_MAP.put("irons_spellbooks:fire_magic", Element.PYRO);
+        DAMAGE_TYPE_MAP.put("irons_spellbooks:ice_magic", Element.CRYO);
+        DAMAGE_TYPE_MAP.put("irons_spellbooks:lightning_magic", Element.ELECTRO);
+        DAMAGE_TYPE_MAP.put("irons_spellbooks:nature_magic", Element.DENDRO);
+        DAMAGE_TYPE_MAP.put("aces_spell_utils:hydro_magic", Element.HYDRO);
+        DAMAGE_TYPE_MAP.put("aces_spell_utils:hydro", Element.HYDRO);
+        DAMAGE_TYPE_MAP.put("hazennstuff:hydro_magic", Element.HYDRO);
+        DAMAGE_TYPE_MAP.put("hazennstuff:hydro", Element.HYDRO);
+        DAMAGE_TYPE_MAP.put("hazen_n_stuff:hydro_magic", Element.HYDRO);
+        DAMAGE_TYPE_MAP.put("hazen_n_stuff:hydro", Element.HYDRO);
     }
 
     public SevenElementsCompat() {
@@ -278,15 +294,10 @@ public class SevenElementsCompat {
         }
     }
 
-    private static final java.util.Map<String, Element> DAMAGE_TYPE_MAP = java.util.Map.of(
-        "irons_spellbooks:fire_magic", Element.PYRO,
-        "irons_spellbooks:ice_magic", Element.CRYO,
-        "irons_spellbooks:lightning_magic", Element.ELECTRO,
-        "irons_spellbooks:nature_magic", Element.DENDRO
-    );
-
     public static net.minecraft.world.damagesource.DamageSource wrapSpellDamage(net.minecraft.world.damagesource.DamageSource source, net.minecraft.world.entity.LivingEntity target) {
         try {
+            if (source == null || target == null) return source;
+            
             LOGGER.info("wrapSpellDamage called. Source type: {}", source.getClass().getName());
             
             net.minecraft.world.damagesource.DamageSource checkSource = source;
@@ -323,7 +334,11 @@ public class SevenElementsCompat {
             }
             
             if (customElementObj != null) {
-                return (net.minecraft.world.damagesource.DamageSource) createElementalDamageSource(checkSource, target, customElementObj);
+                Object result = createElementalDamageSource(checkSource, target, customElementObj);
+                if (result instanceof net.minecraft.world.damagesource.DamageSource ds && ds != checkSource) {
+                    return ds;
+                }
+                return source;
             }
 
             // 1. DamageType ID による判定 (堅牢でシリアライズ対応)
@@ -341,68 +356,107 @@ public class SevenElementsCompat {
                 LOGGER.error("Failed to get damage type location", e);
             }
 
+            Element matchedElement = null;
             if (typeLoc != null) {
                 String typeStr = typeLoc.toString();
                 if (DAMAGE_TYPE_MAP.containsKey(typeStr)) {
-                    Element element = DAMAGE_TYPE_MAP.get(typeStr);
-                    LOGGER.info("DamageType matched spell element: {}", element);
-                    return (net.minecraft.world.damagesource.DamageSource) createElementalDamageSource(checkSource, target, element);
-                }
-            }
-
-            // 1.5. 直接攻撃エンティティ (directEntity) のクラス名による判定 (フォールバック)
-            net.minecraft.world.entity.Entity directEntity = checkSource.getDirectEntity();
-            if (directEntity != null) {
-                String className = directEntity.getClass().getName();
-                LOGGER.info("Direct damage entity class: {}", className);
-                if (className.startsWith("io.redspace.ironsspellbooks.")) {
-                    Element element = getElementFromProjectileClass(className);
-                    if (element != null) {
-                        LOGGER.info("Matched element via projectile class: {}", element);
-                        return (net.minecraft.world.damagesource.DamageSource) createElementalDamageSource(checkSource, target, element);
+                    matchedElement = DAMAGE_TYPE_MAP.get(typeStr);
+                    LOGGER.info("DamageType matched spell element from map: {} -> {}", typeStr, matchedElement);
+                } else {
+                    // Fallback keyword detection for damage type
+                    matchedElement = getElementFromId(typeStr);
+                    if (matchedElement != null) {
+                        LOGGER.info("DamageType {} matched spell element via keyword fallback: {}", typeStr, matchedElement);
+                    } else {
+                        LOGGER.info("DamageType {} not recognized.", typeStr);
                     }
                 }
             }
 
-            // 2. インスタンス判定 (フォールバック)
-            if (checkSource instanceof io.redspace.ironsspellbooks.damage.SpellDamageSource spellSource) {
-                LOGGER.info("Source is SpellDamageSource!");
-                var spell = spellSource.spell();
-                if (spell != null) {
-                    var school = spell.getSchoolType();
-                    if (school != null) {
-                        LOGGER.info("Spell school: {}", school.getId());
-                        Element element = IRONS_SPELLS_MAP.get(school.getId());
-                        if (element != null) {
-                            LOGGER.info("Wrapping spell damage to element via school: {}", element);
-                            return (net.minecraft.world.damagesource.DamageSource) createElementalDamageSource(checkSource, target, element);
+            if (matchedElement == null) {
+                // 1.5. 直接攻撃エンティティ (directEntity) のクラス名による判定 (フォールバック)
+                net.minecraft.world.entity.Entity directEntity = checkSource.getDirectEntity();
+                if (directEntity != null) {
+                    String className = directEntity.getClass().getName();
+                    LOGGER.info("Direct damage entity class: {}", className);
+                    matchedElement = getElementFromProjectileClass(className);
+                    if (matchedElement != null) {
+                        LOGGER.info("Matched element via projectile class: {}", matchedElement);
+                    }
+                }
+            }
+
+            if (matchedElement == null) {
+                // 2. インスタンス判定 (フォールバック)
+                try {
+                    if (checkSource instanceof io.redspace.ironsspellbooks.damage.SpellDamageSource spellSource) {
+                        LOGGER.info("Source is SpellDamageSource!");
+                        var spell = spellSource.spell();
+                        if (spell != null) {
+                            var school = spell.getSchoolType();
+                            if (school != null) {
+                                ResourceLocation schoolId = school.getId();
+                                LOGGER.info("Spell school: {}", schoolId);
+                                matchedElement = IRONS_SPELLS_MAP.get(schoolId);
+                                if (matchedElement == null) {
+                                    // Fallback keyword detection for school
+                                    matchedElement = getElementFromId(schoolId.toString());
+                                }
+                                if (matchedElement != null) {
+                                    LOGGER.info("Found spell element via school (mapped or fallback): {}", matchedElement);
+                                } else {
+                                    LOGGER.info("School {} not recognized.", schoolId);
+                                }
+                            }
                         }
+                    } else {
+                        LOGGER.info("Source is NOT SpellDamageSource (Class: {}).", checkSource.getClass().getName());
                     }
+                } catch (NoClassDefFoundError e) {
+                    LOGGER.info("Iron's Spells classes not found during SpellDamageSource check.");
                 }
-            } else {
-                LOGGER.info("Source is NOT SpellDamageSource.");
             }
-        } catch (NoClassDefFoundError | Exception e) {
+
+            if (matchedElement != null) {
+                Object result = createElementalDamageSource(checkSource, target, matchedElement);
+                if (result instanceof net.minecraft.world.damagesource.DamageSource ds && ds != checkSource) {
+                    return ds;
+                }
+            }
+        } catch (Exception e) {
             LOGGER.error("Error in wrapSpellDamage", e);
         }
         return source;
     }
 
-    private static Element getElementFromProjectileClass(String className) {
-        String lowerName = className.toLowerCase();
-        if (lowerName.contains("fire") || lowerName.contains("fiery") || lowerName.contains("blaze") || lowerName.contains("magma")) {
+    private static Element getElementFromId(String id) {
+        String lowerId = id.toLowerCase();
+        if (lowerId.contains("fire") || lowerId.contains("pyro") || lowerId.contains("burn")) {
             return Element.PYRO;
         }
-        if (lowerName.contains("ice") || lowerName.contains("icicle") || lowerName.contains("snow") || lowerName.contains("comet") || lowerName.contains("frost")) {
+        if (lowerId.contains("water") || lowerId.contains("hydro") || lowerId.contains("bubble") || lowerId.contains("rain")) {
+            return Element.HYDRO;
+        }
+        if (lowerId.contains("ice") || lowerId.contains("cryo") || lowerId.contains("frost") || lowerId.contains("freeze")) {
             return Element.CRYO;
         }
-        if (lowerName.contains("lightning") || lowerName.contains("thunder")) {
+        if (lowerId.contains("lightning") || lowerId.contains("electro") || lowerId.contains("thunder")) {
             return Element.ELECTRO;
         }
-        if (lowerName.contains("poison") || lowerName.contains("acid")) {
+        if (lowerId.contains("nature") || lowerId.contains("dendro") || lowerId.contains("poison") || lowerId.contains("acid")) {
             return Element.DENDRO;
         }
+        if (lowerId.contains("anemo") || lowerId.contains("wind") || lowerId.contains("air")) {
+            return Element.ANEMO;
+        }
+        if (lowerId.contains("geo") || lowerId.contains("rock") || lowerId.contains("earth")) {
+            return Element.GEO;
+        }
         return null;
+    }
+
+    private static Element getElementFromProjectileClass(String className) {
+        return getElementFromId(className);
     }
 
     public static Object createElementalDamageSource(Object source, Object target, Object elementObj) {
@@ -418,7 +472,7 @@ public class SevenElementsCompat {
             java.lang.reflect.Method gaugeUnitsMethod = null;
             for (java.lang.reflect.Method m : elementalApplicationsClass.getMethods()) {
                 if (m.getName().equals("gaugeUnits") && m.getParameterCount() == 3) {
-                    if (m.getParameterTypes()[1].equals(elementClass)) {
+                    if (m.getParameterTypes()[1].getName().equals(elementClass.getName())) {
                         gaugeUnitsMethod = m;
                         break;
                     }
@@ -445,8 +499,12 @@ public class SevenElementsCompat {
                         }
                     }
                 }
-            } else {
+            } else if (elementObj.getClass().getName().equals(elementClass.getName())) {
                 firstElement = elementObj;
+            } else {
+                // Cross-classloader safe resolution: resolve by name from the reflected class
+                String name = elementObj.toString();
+                firstElement = Enum.valueOf((Class<Enum>) elementClass, name);
             }
 
             if (firstElement == null) {
@@ -463,7 +521,8 @@ public class SevenElementsCompat {
             java.lang.reflect.Method ofDefaultMethod = null;
             for (java.lang.reflect.Method m : internalCooldownContextClass.getMethods()) {
                 if (m.getName().equals("ofDefault") && m.getParameterCount() == 2) {
-                    if (entityClass.isAssignableFrom(m.getParameterTypes()[0])) {
+                    Class<?>[] params = m.getParameterTypes();
+                    if (entityClass.isAssignableFrom(params[0]) && params[1].getName().equals("java.lang.String")) {
                         ofDefaultMethod = m;
                         break;
                     }
